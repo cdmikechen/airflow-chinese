@@ -98,6 +98,8 @@ from airflow.www.validators import GreaterEqualThan
 # 2、filter_date 拦截的日期
 # 3、filter_date 拦截的状态
 
+# @@2 如果持续时间是空则认为是0
+
 QUERY_LIMIT = 100000
 CHART_LIMIT = 200000
 
@@ -1553,7 +1555,8 @@ class Airflow(BaseView):
         fails_totals = defaultdict(int)
         for tf in ti_fails:
             dict_key = (tf.dag_id, tf.task_id, tf.execution_date)
-            fails_totals[dict_key] += tf.duration
+            # @@2 如果持续时间是空则认为是0
+            fails_totals[dict_key] += 0 if tf.duration is None else tf.duration
 
         for ti in tis:
             if ti.duration:
