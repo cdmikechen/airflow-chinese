@@ -103,6 +103,7 @@ XCOM_RETURN_KEY = 'return_value'
 Stats = settings.Stats
 
 # @@1 将variable默认加密的部分注释掉
+# @@2 在处理 scheduler 的时候, 将时间字段转回去,否则查询后无结果
 
 
 class InvalidFernetToken(Exception):
@@ -4842,7 +4843,15 @@ class DagRun(Base, LoggingMixin):
         """
         DR = DagRun
 
-        exec_date = func.cast(self.execution_date, DateTime)
+        # exec_date = func.cast(self.execution_date, DateTime)
+        # @@2 这里再将时间字段转回去,否则查询后无结果
+        exec_date = func.cast(timezone.convert_to_utc(self.execution_date), DateTime)
+        # self.log.info("exec_date %s, dag_id %s, run_id %s", self.dag_id, self.dag_id, self.run_id)
+        # print("exec_date %s, dag_id %s, run_id %s" %(self.dag_id, self.dag_id, self.run_id))
+        # fo = open("/root/runoob.txt", "r+")
+        # fo.seek(0, 2)
+        # fo.write("exec_date %s, dag_id %s, run_id %s \r\n" %(self.execution_date, self.dag_id, self.run_id))
+        # fo.close()
 
         dr = session.query(DR).filter(
             DR.dag_id == self.dag_id,
