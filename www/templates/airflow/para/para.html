@@ -25,19 +25,19 @@
   <body class="dark">
   <div id="header">
       <h1>{{ chart.label }}</h1>
-    <button title="Zoom in on selected data" id="keep-data" disabled="disabled">保留</button>
-    <button title="Remove selected data" id="exclude-data" disabled="disabled">排除</button>
-    <button title="Export data as CSV" id="export-data">调出</button>
-    颜色基于: <select id="fields"></select>
+    <button title="Zoom in on selected data" id="keep-data" disabled="disabled">Keep</button>
+    <button title="Remove selected data" id="exclude-data" disabled="disabled">Exclude</button>
+    <button title="Export data as CSV" id="export-data">Export</button>
+    Color based on: <select id="fields"></select>
     <div class="controls">
       <strong id="selected-count"></strong><!--<strong id="data-count"></strong>-->
       <div class="fillbar"><div id="selected-bar"><div id="rendered-bar">&nbsp;</div></div></div>
-      线在 <strong id="opacity"></strong> 不透明.
+      Lines at <strong id="opacity"></strong> opacity.
       <span class="settings">
-        <button id="hide-ticks">隐藏打勾</button>
-        <button id="show-ticks" disabled="disabled">显示打勾</button>
-        <button id="dark-theme" disabled="disabled">调暗</button>
-        <button id="light-theme">调亮</button>
+        <button id="hide-ticks">Hide Ticks</button>
+        <button id="show-ticks" disabled="disabled">Show Ticks</button>
+        <button id="dark-theme" disabled="disabled">Dark</button>
+        <button id="light-theme">Light</button>
       </span>
     </div>
     <div style="clear:both;"></div>
@@ -52,27 +52,27 @@
     <div class="third" id="controls">
 
       <div class="little-box">
-        <h3>控制</h3>
+        <h3>Controls</h3>
         <p>
-          <strong>Brush</strong>: 沿轴线垂直拖动<br/>
-          <strong>Remove Brush</strong>: 点击轴背景<br/>
-          <strong>Reorder Axes</strong>: 阻力水平的标签<br/>
-          <strong>Invert Axis</strong>: 点击轴标签<br/>
-          <strong>Remove Axis</strong>: 将坐标轴拖动到左侧边缘<br/>
+          <strong>Brush</strong>: Drag vertically along an axis.<br/>
+          <strong>Remove Brush</strong>: Tap the axis background.<br/>
+          <strong>Reorder Axes</strong>: Drag a label horizontally.<br/>
+          <strong>Invert Axis</strong>: Tap an axis label.<br/>
+          <strong>Remove Axis</strong>: Drag axis label to the left edge.<br/>
         </p>
       </div>
       <div class="little-box">
-        <h3>信用 &amp; 许可</h3>
+        <h3>Credits &amp; License</h3>
           <p>
             <a href="https://github.com/gameclosure/webgl-2d">Webgl-2d</a>
           </p>
           <p>
-            由实例改编<br/>
-          <a href="http://bl.ocks.org/1341021">Mike Bostock</a> 和 <a href="http://bl.ocks.org/1341281">Jason Davies</a><br/>
+          Adapted from examples by<br/>
+          <a href="http://bl.ocks.org/1341021">Mike Bostock</a> and <a href="http://bl.ocks.org/1341281">Jason Davies</a><br/>
           </p>
           <p>
-            版权 &copy; 2012, Kai Chang<br/>
-            所有版权发布在 <a href="http://opensource.org/licenses/bsd-3-clause">BSD License</a>.
+            Copyright &copy; 2012, Kai Chang<br/>
+            All rights reserved. Released under the <a href="http://opensource.org/licenses/bsd-3-clause">BSD License</a>.
           </p>
         </p>
       </div>
@@ -81,12 +81,12 @@
       <small>
         <!--Last rendered <strong id="render-speed"></strong> lines-->
       </small>
-      <h3>类别</h3>
+      <h3>Categories</h3>
       <p id="legend">
       </p>
     </div>
     <div class="third">
-      <h3>25个样本<input type="text" id="search" placeholder="Search..."></input></h3>
+      <h3>Sample of 25 entries <input type="text" id="search" placeholder="Search..."></input></h3>
       <p id="food-list">
       </p>
     </div>

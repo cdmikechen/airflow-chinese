@@ -1,6 +1,6 @@
 # airflow-chinese
 
-airflow本地UI汉化以及时区适配，针对1.10版本。
+airflow本地UI汉化以及时区适配，针对1.10.1版本。
 
 #### 修改内容
 ###### jobs.py

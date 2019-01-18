@@ -41,6 +41,7 @@ import json
 import logging
 import numbers
 import os
+import pendulum
 import pickle
 import re
 import signal
@@ -61,7 +62,9 @@ from sqlalchemy import func, or_, and_, true as sqltrue
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy.orm import reconstructor, relationship, synonym
 
-from croniter import croniter
+from croniter import (
+    croniter, CroniterBadCronError, CroniterBadDateError, CroniterNotAlphaError
+)
 import six
 
 from airflow import settings, utils
@@ -105,7 +108,6 @@ Stats = settings.Stats
 # @@1 将variable默认加密的部分注释掉
 # @@2 在处理 scheduler 的时候, 将时间字段转回去,否则查询后无结果
 
-
 class InvalidFernetToken(Exception):
     # If Fernet isn't loaded we need a valid exception class to catch. If it is
     # loaded this will get reset to the actual class once get_fernet() is called
@@ -144,6 +146,8 @@ def get_fernet():
     :raises: AirflowException if there's a problem trying to load Fernet
     """
     global _fernet
+    log = LoggingMixin().log
+
     if _fernet:
         return _fernet
     try:
@@ -152,18 +156,26 @@ def get_fernet():
         InvalidFernetToken = InvalidToken
 
     except BuiltinImportError:
-        LoggingMixin().log.warn("cryptography not found - values will not be stored "
-                                "encrypted.",
-                                exc_info=1)
+        log.warning(
+            "cryptography not found - values will not be stored encrypted."
+        )
         _fernet = NullFernet()
         return _fernet
 
     try:
-        _fernet = Fernet(configuration.conf.get('core', 'FERNET_KEY').encode('utf-8'))
-        _fernet.is_encrypted = True
-        return _fernet
+        fernet_key = configuration.conf.get('core', 'FERNET_KEY')
+        if not fernet_key:
+            log.warning(
+                "empty cryptography key - values will not be stored encrypted."
+            )
+            _fernet = NullFernet()
+        else:
+            _fernet = Fernet(fernet_key.encode('utf-8'))
+            _fernet.is_encrypted = True
     except (ValueError, TypeError) as ve:
         raise AirflowException("Could not create Fernet object: {}".format(ve))
+
+    return _fernet
 
 
 # Used by DAG context_managers
@@ -338,7 +350,8 @@ class DagBag(BaseDagBag, LoggingMixin):
             return found_dags
 
         mods = []
-        if not zipfile.is_zipfile(filepath):
+        is_zipfile = zipfile.is_zipfile(filepath)
+        if not is_zipfile:
             if safe_mode and os.path.isfile(filepath):
                 with open(filepath, 'rb') as f:
                     content = f.read()
@@ -410,13 +423,23 @@ class DagBag(BaseDagBag, LoggingMixin):
                 if isinstance(dag, DAG):
                     if not dag.full_filepath:
                         dag.full_filepath = filepath
-                        if dag.fileloc != filepath:
+                        if dag.fileloc != filepath and not is_zipfile:
                             dag.fileloc = filepath
                     try:
                         dag.is_subdag = False
                         self.bag_dag(dag, parent_dag=dag, root_dag=dag)
+                        if isinstance(dag._schedule_interval, six.string_types):
+                            croniter(dag._schedule_interval)
                         found_dags.append(dag)
                         found_dags += dag.subdags
+                    except (CroniterBadCronError,
+                            CroniterBadDateError,
+                            CroniterNotAlphaError) as cron_e:
+                        self.log.exception("Failed to bag_dag: %s", dag.full_filepath)
+                        self.import_errors[dag.full_filepath] = \
+                            "Invalid Cron expression: " + str(cron_e)
+                        self.file_last_changed[dag.full_filepath] = \
+                            file_last_changed_on_disk
                     except AirflowDagCycleException as cycle_exception:
                         self.log.exception("Failed to bag_dag: %s", dag.full_filepath)
                         self.import_errors[dag.full_filepath] = str(cycle_exception)
@@ -511,10 +534,12 @@ class DagBag(BaseDagBag, LoggingMixin):
         Given a file path or a folder, this method looks for python modules,
         imports them and adds them to the dagbag collection.
 
-        Note that if a .airflowignore file is found while processing,
-        the directory, it will behaves much like a .gitignore does,
+        Note that if a ``.airflowignore`` file is found while processing
+        the directory, it will behave much like a ``.gitignore``,
         ignoring files that match any of the regex patterns specified
-        in the file. **Note**: The patterns in .airflowignore are treated as
+        in the file.
+
+        **Note**: The patterns in .airflowignore are treated as
         un-anchored regexes, not shell-like glob patterns.
         """
         start_dttm = timezone.utcnow()
@@ -1110,10 +1135,10 @@ class TaskInstance(Base, LoggingMixin):
         BASE_URL = configuration.conf.get('webserver', 'BASE_URL')
         if settings.RBAC:
             return BASE_URL + (
-                "/log/list/"
-                "?_flt_3_dag_id={self.dag_id}"
-                "&_flt_3_task_id={self.task_id}"
-                "&_flt_3_execution_date={iso}"
+                "/log?"
+                "execution_date={iso}"
+                "&task_id={self.task_id}"
+                "&dag_id={self.dag_id}"
             ).format(**locals())
         else:
             return BASE_URL + (
@@ -1226,7 +1251,7 @@ class TaskInstance(Base, LoggingMixin):
         """
         Returns a tuple that identifies the task instance uniquely
         """
-        return self.dag_id, self.task_id, self.execution_date
+        return self.dag_id, self.task_id, self.execution_date, self.try_number
 
     @provide_session
     def set_state(self, state, session=None):
@@ -1676,14 +1701,6 @@ class TaskInstance(Base, LoggingMixin):
             self.handle_failure(e, test_mode, context)
             raise
 
-        # Recording SUCCESS
-        self.end_date = timezone.utcnow()
-        self.set_duration()
-        if not test_mode:
-            session.add(Log(self.state, self))
-            session.merge(self)
-        session.commit()
-
         # Success callback
         try:
             if task.on_success_callback:
@@ -1692,6 +1709,12 @@ class TaskInstance(Base, LoggingMixin):
             self.log.error("Failed when executing success callback")
             self.log.exception(e3)
 
+        # Recording SUCCESS
+        self.end_date = timezone.utcnow()
+        self.set_duration()
+        if not test_mode:
+            session.add(Log(self.state, self))
+            session.merge(self)
         session.commit()
 
     @provide_session
@@ -1747,6 +1770,9 @@ class TaskInstance(Base, LoggingMixin):
 
         # Log failure duration
         session.add(TaskFail(task, self.execution_date, self.start_date, self.end_date))
+
+        if context is not None:
+            context['exception'] = error
 
         # Let's go deeper
         try:
@@ -2292,6 +2318,7 @@ class BaseOperator(LoggingMixin):
     :type on_failure_callback: callable
     :param on_retry_callback: much like the ``on_failure_callback`` except
         that it is executed when retries occur.
+    :type on_retry_callback: callable
     :param on_success_callback: much like the ``on_failure_callback`` except
         that it is executed when the task succeeds.
     :type on_success_callback: callable
@@ -2314,14 +2341,17 @@ class BaseOperator(LoggingMixin):
     :param executor_config: Additional task-level configuration parameters that are
         interpreted by a specific executor. Parameters are namespaced by the name of
         executor.
-        ``example: to run this task in a specific docker container through
-        the KubernetesExecutor
-        MyOperator(...,
-            executor_config={
-            "KubernetesExecutor":
-                {"image": "myCustomDockerImage"}
-                }
-        )``
+
+        **Example**: to run this task in a specific docker container through
+        the KubernetesExecutor ::
+
+            MyOperator(...,
+                executor_config={
+                "KubernetesExecutor":
+                    {"image": "myCustomDockerImage"}
+                    }
+            )
+
     :type executor_config: dict
     """
 
@@ -2390,10 +2420,17 @@ class BaseOperator(LoggingMixin):
         self.email = email
         self.email_on_retry = email_on_retry
         self.email_on_failure = email_on_failure
+
         self.start_date = start_date
         if start_date and not isinstance(start_date, datetime):
             self.log.warning("start_date for %s isn't datetime.datetime", self)
+        elif start_date:
+            self.start_date = timezone.convert_to_utc(start_date)
+
         self.end_date = end_date
+        if end_date:
+            self.end_date = timezone.convert_to_utc(end_date)
+
         if not TriggerRule.is_valid(trigger_rule):
             raise AirflowException(
                 "The trigger_rule must be one of {all_triggers},"
@@ -3214,7 +3251,8 @@ class DAG(BaseDag, LoggingMixin):
                     timezone.parse(self.default_args['start_date'])
                 )
             self.timezone = self.default_args['start_date'].tzinfo
-        else:
+
+        if not hasattr(self, 'timezone') or not self.timezone:
             self.timezone = settings.TIMEZONE
 
         self.start_date = timezone.convert_to_utc(start_date)
@@ -3319,34 +3357,77 @@ class DAG(BaseDag, LoggingMixin):
             start_date=start_date, end_date=end_date,
             num=num, delta=self._schedule_interval)
 
+    def is_fixed_time_schedule(self):
+        """
+        Figures out if the DAG schedule has a fixed time (e.g. 3 AM).
+
+        :return: True if the schedule has a fixed time, False if not.
+        """
+        now = datetime.now()
+        cron = croniter(self._schedule_interval, now)
+
+        start = cron.get_next(datetime)
+        cron_next = cron.get_next(datetime)
+
+        if cron_next.minute == start.minute and cron_next.hour == start.hour:
+            return True
+
+        return False
+
     def following_schedule(self, dttm):
         """
-        Calculates the following schedule for this dag in local time
+        Calculates the following schedule for this dag in UTC.
 
         :param dttm: utc datetime
         :return: utc datetime
         """
         if isinstance(self._schedule_interval, six.string_types):
-            dttm = timezone.make_naive(dttm, self.timezone)
-            cron = croniter(self._schedule_interval, dttm)
-            following = timezone.make_aware(cron.get_next(datetime), self.timezone)
+            # we don't want to rely on the transitions created by
+            # croniter as they are not always correct
+            dttm = pendulum.instance(dttm)
+            naive = timezone.make_naive(dttm, self.timezone)
+            cron = croniter(self._schedule_interval, naive)
+
+            # We assume that DST transitions happen on the minute/hour
+            if not self.is_fixed_time_schedule():
+                # relative offset (eg. every 5 minutes)
+                delta = cron.get_next(datetime) - naive
+                following = dttm.in_timezone(self.timezone).add_timedelta(delta)
+            else:
+                # absolute (e.g. 3 AM)
+                naive = cron.get_next(datetime)
+                tz = pendulum.timezone(self.timezone.name)
+                following = timezone.make_aware(naive, tz)
             return timezone.convert_to_utc(following)
         elif isinstance(self._schedule_interval, timedelta):
             return dttm + self._schedule_interval
 
     def previous_schedule(self, dttm):
         """
-        Calculates the previous schedule for this dag in local time
+        Calculates the previous schedule for this dag in UTC
 
         :param dttm: utc datetime
         :return: utc datetime
         """
         if isinstance(self._schedule_interval, six.string_types):
-            dttm = timezone.make_naive(dttm, self.timezone)
-            cron = croniter(self._schedule_interval, dttm)
-            prev = timezone.make_aware(cron.get_prev(datetime), self.timezone)
-            return timezone.convert_to_utc(prev)
-        elif isinstance(self._schedule_interval, timedelta):
+            # we don't want to rely on the transitions created by
+            # croniter as they are not always correct
+            dttm = pendulum.instance(dttm)
+            naive = timezone.make_naive(dttm, self.timezone)
+            cron = croniter(self._schedule_interval, naive)
+
+            # We assume that DST transitions happen on the minute/hour
+            if not self.is_fixed_time_schedule():
+                # relative offset (eg. every 5 minutes)
+                delta = naive - cron.get_prev(datetime)
+                previous = dttm.in_timezone(self.timezone).subtract_timedelta(delta)
+            else:
+                # absolute (e.g. 3 AM)
+                naive = cron.get_prev(datetime)
+                tz = pendulum.timezone(self.timezone.name)
+                previous = timezone.make_aware(naive, tz)
+            return timezone.convert_to_utc(previous)
+        elif self._schedule_interval is not None:
             return dttm - self._schedule_interval
 
     def get_run_dates(self, start_date, end_date=None):
@@ -3757,9 +3838,11 @@ class DAG(BaseDag, LoggingMixin):
             only_running=False,
             confirm_prompt=False,
             include_subdags=True,
+            include_parentdag=True,
             reset_dag_runs=True,
             dry_run=False,
             session=None,
+            get_tis=False,
     ):
         """
         Clears a set of task instances associated with the current dag for
@@ -3780,6 +3863,25 @@ class DAG(BaseDag, LoggingMixin):
             tis = session.query(TI).filter(TI.dag_id == self.dag_id)
             tis = tis.filter(TI.task_id.in_(self.task_ids))
 
+        if include_parentdag and self.is_subdag:
+
+            p_dag = self.parent_dag.sub_dag(
+                task_regex=self.dag_id.split('.')[1],
+                include_upstream=False,
+                include_downstream=True)
+
+            tis = tis.union(p_dag.clear(
+                start_date=start_date, end_date=end_date,
+                only_failed=only_failed,
+                only_running=only_running,
+                confirm_prompt=confirm_prompt,
+                include_subdags=include_subdags,
+                include_parentdag=False,
+                reset_dag_runs=reset_dag_runs,
+                get_tis=True,
+                session=session,
+            ))
+
         if start_date:
             tis = tis.filter(TI.execution_date >= start_date)
         if end_date:
@@ -3788,6 +3890,9 @@ class DAG(BaseDag, LoggingMixin):
             tis = tis.filter(TI.state == State.FAILED)
         if only_running:
             tis = tis.filter(TI.state == State.RUNNING)
+
+        if get_tis:
+            return tis
 
         if dry_run:
             tis = tis.all()
@@ -3832,6 +3937,7 @@ class DAG(BaseDag, LoggingMixin):
             only_running=False,
             confirm_prompt=False,
             include_subdags=True,
+            include_parentdag=False,
             reset_dag_runs=True,
             dry_run=False,
     ):
@@ -3844,6 +3950,7 @@ class DAG(BaseDag, LoggingMixin):
                 only_running=only_running,
                 confirm_prompt=False,
                 include_subdags=include_subdags,
+                include_parentdag=include_parentdag,
                 reset_dag_runs=reset_dag_runs,
                 dry_run=True)
             all_tis.extend(tis)
@@ -4221,6 +4328,7 @@ class DAG(BaseDag, LoggingMixin):
                 DagModel).filter(~DagModel.dag_id.in_(active_dag_ids)).all():
             dag.is_active = False
             session.merge(dag)
+        session.commit()
 
     @staticmethod
     @provide_session
@@ -4762,7 +4870,7 @@ class DagStat(Base):
         """
         # unfortunately sqlalchemy does not know upsert
         qry = session.query(DagStat).filter(DagStat.dag_id == dag_id).all()
-        states = [dag_stat.state for dag_stat in qry]
+        states = {dag_stat.state for dag_stat in qry}
         for state in State.dag_states:
             if state not in states:
                 try:
@@ -4819,6 +4927,8 @@ class DagRun(Base, LoggingMixin):
     def set_state(self, state):
         if self._state != state:
             self._state = state
+            self.end_date = timezone.utcnow() if self._state in State.finished() else None
+
             if self.dag_id is not None:
                 # FIXME: Due to the scoped_session factor we we don't get a clean
                 # session here, so something really weird goes on:
@@ -4846,12 +4956,6 @@ class DagRun(Base, LoggingMixin):
         # exec_date = func.cast(self.execution_date, DateTime)
         # @@2 这里再将时间字段转回去,否则查询后无结果
         exec_date = func.cast(timezone.convert_to_utc(self.execution_date), DateTime)
-        # self.log.info("exec_date %s, dag_id %s, run_id %s", self.dag_id, self.dag_id, self.run_id)
-        # print("exec_date %s, dag_id %s, run_id %s" %(self.dag_id, self.dag_id, self.run_id))
-        # fo = open("/root/runoob.txt", "r+")
-        # fo.seek(0, 2)
-        # fo.write("exec_date %s, dag_id %s, run_id %s \r\n" %(self.execution_date, self.dag_id, self.run_id))
-        # fo.close()
 
         dr = session.query(DR).filter(
             DR.dag_id == self.dag_id,
@@ -5050,7 +5154,7 @@ class DagRun(Base, LoggingMixin):
             if (not unfinished_tasks and
                     any(r.state in (State.FAILED, State.UPSTREAM_FAILED) for r in roots)):
                 self.log.info('Marking run %s failed', self)
-                self.state = State.FAILED
+                self.set_state(State.FAILED)
                 dag.handle_callback(self, success=False, reason='task_failure',
                                     session=session)
 
@@ -5058,20 +5162,20 @@ class DagRun(Base, LoggingMixin):
             elif not unfinished_tasks and all(r.state in (State.SUCCESS, State.SKIPPED)
                                               for r in roots):
                 self.log.info('Marking run %s successful', self)
-                self.state = State.SUCCESS
+                self.set_state(State.SUCCESS)
                 dag.handle_callback(self, success=True, reason='success', session=session)
 
             # if *all tasks* are deadlocked, the run failed
             elif (unfinished_tasks and none_depends_on_past and
                   none_task_concurrency and no_dependencies_met):
                 self.log.info('Deadlock; marking run %s failed', self)
-                self.state = State.FAILED
+                self.set_state(State.FAILED)
                 dag.handle_callback(self, success=False, reason='all_tasks_deadlocked',
                                     session=session)
 
             # finally, if the roots aren't done, the dag is still running
             else:
-                self.state = State.RUNNING
+                self.set_state(State.RUNNING)
 
         # todo: determine we want to use with_for_update to make sure to lock the run
         session.merge(self)
@@ -5116,6 +5220,8 @@ class DagRun(Base, LoggingMixin):
         # check for missing tasks
         for task in six.itervalues(dag.task_dict):
             if task.adhoc:
+                continue
+            if task.start_date > self.execution_date and not self.is_backfill:
                 continue
 
             if task.task_id not in task_ids:
