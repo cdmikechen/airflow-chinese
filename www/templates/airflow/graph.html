@@ -23,98 +23,105 @@
 
 {% block head_css %}
 {{ super() }}
-<link rel="stylesheet" type="text/css"
-    href="{{ url_for('static', filename='dagre.css') }}">
-<link rel="stylesheet" type="text/css"
-    href="{{ url_for('static', filename='graph.css') }}">
+<link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='dagre.css') }}">
+<link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='graph.css') }}">
 {% endblock %}
 
 {% block body %}
 {{ super() }}
-    {% if dag.doc_md %}
-        <div class="rich_doc" style="margin-bottom: 15px;">{{ doc_md|safe }}</div>
-    {% endif %}
-    <div class="form-inline">
-        <form method="get" style="float:left;">
-            {{ state_token }}
-            基准日期: {{ form.base_date(class_="form-control") }}
-            运行数量: {{ form.num_runs(class_="form-control") }}
-            运行:
-            {{ form.execution_date(class_="form-control") | safe }}
-            布局:
-            {{ form.arrange(class_="form-control") | safe }}
-            <input type="hidden" name="root" value="{{ root }}">
-            <input type="hidden" value="{{ dag.dag_id }}" name="dag_id">
-            <input name="_csrf_token" type="hidden" value="{{ csrf_token() }}">
-            <input type="submit" value="Go" class="btn btn-default"
-            action="" method="get">
-        </form>
-            <div class="input-group" style="float: right;">
-              <input type="text" id="searchbox" class="form-control" placeholder="Search for..." onenter="null">
-            </div><!-- /input-group -->
-        <div style="clear: both;"/>
-    </div>
+{% if dag.doc_md %}
+<div class="rich_doc" style="margin-bottom: 15px;">{{ dag.doc_md|safe }}</div>
+{% endif %}
+<div class="form-inline">
+  <form method="get" style="float:left;">
+    {{ state_token }}
+    基准日期: {{ form.base_date(class_="form-control") }}
+    运行数量: {{ form.num_runs(class_="form-control") }}
+    运行:
+    {{ form.execution_date(class_="form-control") | safe }}
+    布局:
+    {{ form.arrange(class_="form-control") | safe }}
+    <input type="hidden" name="root" value="{{ root }}">
+    <input type="hidden" value="{{ dag.dag_id }}" name="dag_id">
+    <input name="_csrf_token" type="hidden" value="{{ csrf_token() }}">
+    <input type="submit" value="Go" class="btn btn-default">
+  </form>
+  <div class="input-group" style="float: right;">
+    <input type="text" id="searchbox" class="form-control" placeholder="Search for...">
+  </div>
+  <div style="clear: both;"></div>
+</div>
 <hr/>
 <div>
-    {% for op in operators %}
-    <div class="legend_item" style="border-width:1px;float:left;background:{{ op.ui_color }};color:{{ op.ui_fgcolor }};">
-        {{ op.__name__ }}
-    </div>
-    {% endfor %}
+  {% for op in operators %}
+  <div class="legend_item"
+       style="border-width:1px;float:left;background:{{ op.ui_color }};color:{{ op.ui_fgcolor }};">
+    {{ op.__name__ }}
+  </div>
+  {% endfor %}
 
-    <div style"background-color: blue;">
+  <div>
     <div class="legend_item state" style="border-color:white;">无状态</div>
-    <div class="legend_item state" style="border-color:grey;">队列中</div>
-    <div class="legend_item state" style="border-color:gold;">重试</div>
+    <div class="legend_item state" style="border-color:grey;">排队中</div>
+    <div class="legend_item state" style="border-color:gold;">等待重试</div>
+    <div class="legend_item state" style="border-color:turquoise;">等待重新调度</div>
     <div class="legend_item state" style="border-color:pink;">跳过</div>
     <div class="legend_item state" style="border-color:red;">失败</div>
     <div class="legend_item state" style="border-color:lime;">运行中</div>
-    <div class="legend_item state" style="border-color:green;">成功</div>    </div>
-    <div style="clear:both;"></div>
+    <div class="legend_item state" style="border-color:green;">成功</div>
+  </div>
+  <div style="clear:both;"></div>
 </div>
 <div id="error" style="display: none; margin-top: 10px;" class="alert alert-danger" role="alert">
-        <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
-        <span id="error_msg">Oops.</span>
+  <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
+  <span id="error_msg">Oops.</span>
 </div>
 <hr style="margin-bottom: 0px;"/>
 <button class="btn btn-default pull-right" id="refresh_button">
-    <span class="glyphicon glyphicon-refresh" aria-hidden="true"></span>
+  <span class="glyphicon glyphicon-refresh" aria-hidden="true"></span>
 </button>
 <div id="svg_container">
 
-    <svg width="{{ width }}" height="{{ height }}">
-        <g id='dig' transform="translate(20,20)"/>
-        <filter id="blur-effect-1">
-        <feGaussianBlur stdDeviation="3" />
-        </filter>
-    </svg>
-    <img id="loading" alt="spinner" src="{{ url_for('static', filename='loading.gif') }}">
+  <svg width="{{ width }}" height="{{ height }}">
+    <g id='dig' transform="translate(20,20)"></g>
+    <filter id="blur-effect-1">
+      <feGaussianBlur stdDeviation="3"></feGaussianBlur>
+    </filter>
+  </svg>
+  <img id="loading" alt="spinner" src="{{ url_for('static', filename='loading.gif') }}">
 </div>
 <hr>
 {% endblock %}
 
 {% block tail %}
-    {{ super() }}
+{{ super() }}
 
-    <script src="{{ url_for('static', filename='d3.v3.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='dagre-d3.js') }}"></script>
-    <script>
+<script src="{{ url_for('static', filename='d3.v3.min.js') }}"></script>
+<script src="{{ url_for('static', filename='dagre-d3.js') }}"></script>
+<script>
 
     var highlight_color = "#000000";
     var upstream_color = "#2020A0";
     var downstream_color = "#0000FF";
 
-    var nodes = {{ nodes|safe }};
-    var edges = {{ edges|safe }};
-    var tasks = {{ tasks|safe }};
-    var task_instances = {{ task_instances|safe }};
+    var nodes = {{ nodes|tojson|safe }};
+    var edges = {{ edges|tojson|safe }};
+    var tasks = {{ tasks|tojson|safe }};
+    var task_instances = {{ task_instances|tojson|safe }};
     var execution_date = "{{ execution_date }}";
     var arrange = "{{ arrange }}";
     var g = dagreD3.json.decode(nodes, edges);
     var duration = 500;
     var stateFocusMap = {
-        'no status':false, 'failed':false, 'running':false,
-        'queued': false, 'success': false};
+        'success': false,
+        'running':false,
+        'failed':false,
+        'skipped': false,
+        'up_for_reschedule': false,
+        'up_for_retry': false,
+        'queued': false,
+        'no_status': false
+    };
 
 
     var layout = dagreD3.layout().rankDir(arrange).nodeSep(15).rankSep(15);
@@ -126,9 +133,9 @@
     d3.selectAll("g.node").on("click", function(d){
         task = tasks[d];
         if (task.task_type == "SubDagOperator")
-            call_modal(d, execution_date, true);
+            call_modal(d, execution_date, task_instances[d].try_number, true);
         else
-            call_modal(d, execution_date);
+            call_modal(d, execution_date,task_instances[d].try_number);
     });
 
 
@@ -268,22 +275,25 @@
         $.each(task_instances, function(task_id, ti) {
           $('tspan').filter(function(index) { return $(this).text() === task_id; })
             .parent().parent().parent()
-            .attr("class", "node enter " + ti.state)
+            .attr("class", "node enter " + (ti.state ? ti.state : "no_status"))
             .attr("data-toggle", "tooltip")
             .attr("data-original-title", function(d) {
               // Tooltip
               task = tasks[task_id];
-                tt =  "任务id: " + ti.task_id + "<br>";
-                tt += "运行: " + ti.execution_date + "<br>";
-                if(ti.run_id != undefined){
-                    tt += "运行id: <nobr>" + ti.run_id + "</nobr><br>";
-                }
-                tt += "操作: " + task.task_type + "<br>";
-                tt += "启动: " + ti.start_date + "<br>";
-                tt += "结束: " + ti.end_date + "<br>";
-                tt += "持续: " + ti.duration + "<br>";
-                tt += "状态: " + ti.state + "<br>";
-                return tt;
+              tt = "";
+              if(ti.task_id != undefined){
+                tt +=  "任务id: " + escapeHtml(ti.task_id) + "<br>";
+              }
+              tt += "运行: " + escapeHtml(ti.execution_date) + "<br>";
+              if(ti.run_id != undefined){
+                tt += "运行id: <nobr>" + escapeHtml(ti.run_id) + "</nobr><br>";
+              }
+              tt += "运行: " + escapeHtml(task.task_type) + "<br>";
+              tt += "启动: " + escapeHtml(ti.start_date) + "<br>";
+              tt += "结束: " + escapeHtml(ti.end_date) + "<br>";
+              tt += "持续时间: " + escapeHtml(ti.duration) + "<br>";
+              tt += "状态: " + escapeHtml(ti.state) + "<br>";
+              return tt;
             });
         });
     }
@@ -366,7 +376,7 @@
         }
     );
 
-    </script>
+</script>
 
 
 {% endblock %}
