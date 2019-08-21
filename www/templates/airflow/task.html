@@ -37,9 +37,7 @@
                 </tr>
             {% endfor %}
         </table>
-        {% if html_code is defined %}
-            {{ html_code|safe }}
-        {% endif %}
+        {{ html_code|safe }}
     </div>
     <div>
         {% for attr, value in special_attrs_rendered.items() %}
@@ -72,8 +70,6 @@
                 </tr>
             {% endfor %}
         </table>
-        {% if html_code is defined %}
-            {{ html_code|safe }}
-        {% endif %}
+        {{ html_code|safe }}
     </div>
 {% endblock %}
